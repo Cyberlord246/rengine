@@ -6,6 +6,8 @@ Autonomous Mode subscan action. All logic is pure Python (see the sibling
 modules); tasks only orchestrate + persist.
 """
 
+from urllib.parse import urlparse
+
 from celery.utils.log import get_task_logger
 from django.utils import timezone
 
@@ -15,6 +17,7 @@ from reNgine.common_func import get_http_urls, get_random_proxy
 from reNgine.utilities import SubdomainScopeChecker
 from startScan.models import EndPoint, Subdomain, Vulnerability
 
+from reconIntel import api_schema as schema_mod
 from reconIntel import dedup as dedup_mod
 from reconIntel import js_analysis as js_mod
 from reconIntel import origin_ip as origin_mod
@@ -30,14 +33,19 @@ from reconIntel.models import (
 logger = get_task_logger(__name__)
 
 
-def _save_endpoint_urls(urls, ctx, source='js_analysis'):
+def _save_endpoint_urls(urls, ctx, source='js_analysis', status_map=None):
     """Persist discovered endpoint URLs via reNgine's own save_endpoint so
     they flow through the normal dedup/correlation path. save_endpoint reads
-    subscan_id from ctx (not a kwarg)."""
+    subscan_id from ctx (not a kwarg). If status_map is given, the confirmed
+    HTTP status is stored on the endpoint."""
     from reNgine.tasks import save_endpoint  # local import avoids circularity
+    status_map = status_map or {}
     created = 0
     for url in urls:
-        endpoint, was_created = save_endpoint(url, ctx=ctx, crawl=False, source=source)
+        extra = {}
+        if url in status_map:
+            extra['http_status'] = status_map[url]
+        endpoint, was_created = save_endpoint(url, ctx=ctx, crawl=False, source=source, **extra)
         if was_created:
             created += 1
     return created
@@ -57,43 +65,86 @@ def js_analysis(self, urls=[], ctx={}, description=None):
 
     cfg = self.yaml_configuration.get('js_analysis') or {}
     max_endpoints = cfg.get('max_js_endpoints', js_mod.DEFAULT_MAX_JS_ENDPOINTS)
+    enable_http_crawl = cfg.get('enable_http_crawl', True)
+    parse_api_schemas = cfg.get('parse_api_schemas', True)
 
     all_endpoints = set()
     total_secrets = 0
     for url in urls:
         endpoints, secrets = js_mod.analyze_url(url, domain_name, scope_checker, proxy)
         all_endpoints |= endpoints
-        for secret in secrets:
-            _, created = DiscoveredSecret.objects.get_or_create(
-                scan_history=self.scan,
-                secret_type=secret['secret_type'],
-                redacted_snippet=secret['redacted_snippet'],
-                source_url=secret['source_url'],
-                defaults={
-                    'subdomain': self.subdomain,
-                    'severity': secret['severity'],
-                    'discovered_date': timezone.now(),
-                },
-            )
-            if created:
-                total_secrets += 1
+        total_secrets += _save_secrets(self, secrets)
+
+    # Parse API schemas (Swagger/OpenAPI/GraphQL) on the target host(s) to add
+    # documented endpoints + parameters. Best-effort, per unique host.
+    total_params = 0
+    if parse_api_schemas:
+        hosts = {urlparse(u).netloc for u in urls if u}
+        for host in list(hosts)[:10]:
+            if not host:
+                continue
+            result = schema_mod.discover(f'https://{host}', proxy=proxy)
+            all_endpoints |= {e for e in result['endpoints'] if not js_mod.is_noise_endpoint(e)}
+            total_params += _save_params(self, result['params'])
 
     # Cap how many endpoints one run may persist so a pathological JS bundle
     # can never flood the endpoint table (the noise that can overwhelm the UI).
     discovered = len(all_endpoints)
     capped = sorted(all_endpoints)[:max_endpoints]
 
+    # Confirm which discovered endpoints are actually live, so the results are
+    # "actual" endpoints, not just references. Stores the real HTTP status.
+    live_status = {}
+    if enable_http_crawl and capped:
+        live_status = js_mod.probe_liveness(capped, proxy=proxy)
+
     if self.subscan_id:
         ctx = {**ctx, 'subscan_id': self.subscan_id}
-    new_endpoints = _save_endpoint_urls(capped, ctx)
+    new_endpoints = _save_endpoint_urls(capped, ctx, status_map=live_status)
     self.notify(fields={
         'JS endpoints discovered': discovered,
         'Endpoints kept (cap %d)' % max_endpoints: len(capped),
+        'Live (confirmed) endpoints': len(live_status),
         'New endpoints saved': new_endpoints,
+        'API-schema parameters': total_params,
         'Secrets found': total_secrets,
     })
-    return {'endpoints': discovered, 'kept': len(capped),
-            'new_endpoints': new_endpoints, 'secrets': total_secrets}
+    return {'endpoints': discovered, 'kept': len(capped), 'live': len(live_status),
+            'new_endpoints': new_endpoints, 'params': total_params, 'secrets': total_secrets}
+
+
+def _save_secrets(task, secrets):
+    created_count = 0
+    for secret in secrets:
+        _, created = DiscoveredSecret.objects.get_or_create(
+            scan_history=task.scan,
+            secret_type=secret['secret_type'],
+            redacted_snippet=secret['redacted_snippet'],
+            source_url=secret['source_url'],
+            defaults={
+                'subdomain': task.subdomain,
+                'severity': secret['severity'],
+                'discovered_date': timezone.now(),
+            },
+        )
+        if created:
+            created_count += 1
+    return created_count
+
+
+def _save_params(task, params):
+    created_count = 0
+    for name, ptype in params:
+        _, created = HttpParameter.objects.get_or_create(
+            scan_history=task.scan,
+            endpoint=None,
+            name=str(name)[:500],
+            param_type=ptype if ptype in ('query', 'body', 'json') else 'query',
+            defaults={'subdomain': task.subdomain, 'source': 'api_schema', 'discovered_date': timezone.now()},
+        )
+        if created:
+            created_count += 1
+    return created_count
 
 
 @app.task(name='param_discovery', queue='reconintel_queue', base=RengineTask, bind=True)

@@ -245,6 +245,14 @@ urlpatterns = [
         AutonomousApprovalDecide.as_view(),
         name='autonomous_approvals_decide'),
     path(
+        'recon_intel/secrets/',
+        ListDiscoveredSecrets.as_view(),
+        name='recon_intel_secrets'),
+    path(
+        'recon_intel/js_files_with_secrets/',
+        ListJsFilesWithSecrets.as_view(),
+        name='recon_intel_js_files_with_secrets'),
+    path(
         'fetch/results/subscan/',
         FetchSubscanResults.as_view(),
         name='fetch_subscan_results'),

@@ -7,6 +7,7 @@ image). Endpoint regex is LinkFinder-style; secret regexes are gitleaks-style.
 import math
 import re
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -216,8 +217,9 @@ def analyze_url(url, base_host, scope_checker=None, proxy=None):
     is_js = parsed.path.endswith('.js')
 
     if is_js:
-        endpoints |= extract_endpoints_from_js(text, url)
-        secrets += extract_secrets_from_text(text, url)
+        eps, secs = _analyze_js(url, text, proxy)
+        endpoints |= eps
+        secrets += secs
     else:
         # HTML page: pull script srcs + inline scripts, analyze each.
         js_urls, inline_blobs = extract_js_urls(url, text)
@@ -228,8 +230,9 @@ def analyze_url(url, base_host, scope_checker=None, proxy=None):
             js_text = _fetch(js_url, proxy=proxy)
             if not js_text:
                 continue
-            endpoints |= extract_endpoints_from_js(js_text, js_url)
-            secrets += extract_secrets_from_text(js_text, js_url)
+            eps, secs = _analyze_js(js_url, js_text, proxy)
+            endpoints |= eps
+            secrets += secs
 
     # Drop static assets / bundle URLs, then scope-filter on host.
     kept = set()
@@ -243,6 +246,61 @@ def analyze_url(url, base_host, scope_checker=None, proxy=None):
         kept.add(ep)
 
     return kept, secrets
+
+
+SOURCEMAP_COMMENT = re.compile(r'//[#@]\s*sourceMappingURL=(\S+)')
+
+
+def _analyze_js(js_url, js_text, proxy=None):
+    """Analyze one JS file's text for endpoints + secrets, and also follow its
+    source map (.map) if present - source maps embed original source and are a
+    high-yield place for secrets."""
+    endpoints = extract_endpoints_from_js(js_text, js_url)
+    secrets = extract_secrets_from_text(js_text, js_url)
+
+    # Locate the source map: explicit sourceMappingURL comment, else <js>.map.
+    map_url = None
+    m = SOURCEMAP_COMMENT.search(js_text[-2000:])  # comment is at file end
+    if m:
+        ref = m.group(1)
+        if not ref.startswith('data:'):  # inline data-URI maps already in text
+            map_url = urljoin(js_url, ref)
+    else:
+        map_url = js_url + '.map'
+
+    if map_url:
+        map_text = _fetch(map_url, proxy=proxy)
+        if map_text and ('"sources"' in map_text or '"sourcesContent"' in map_text):
+            # Scan the map's original source for secrets and endpoints.
+            secrets += extract_secrets_from_text(map_text, map_url)
+            endpoints |= extract_endpoints_from_js(map_text, js_url)
+    return endpoints, secrets
+
+
+def probe_liveness(urls, proxy=None, max_workers=20, timeout=8):
+    """Concurrently probe URLs and return {url: http_status} for those that
+    respond. Self-contained (does not touch reNgine's http_crawl dedup path)."""
+    proxies = {'http': proxy, 'https': proxy} if proxy else None
+    headers = {'User-Agent': 'Mozilla/5.0 (reNgine reconIntel)'}
+
+    def _probe(u):
+        try:
+            r = requests.head(u, timeout=timeout, verify=False, proxies=proxies,
+                              headers=headers, allow_redirects=True)
+            # Some servers reject HEAD - fall back to a lightweight GET.
+            if r.status_code in (405, 400, 501):
+                r = requests.get(u, timeout=timeout, verify=False, proxies=proxies,
+                                 headers=headers, allow_redirects=True, stream=True)
+            return u, r.status_code
+        except Exception:
+            return u, None
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        for u, status in pool.map(_probe, urls):
+            if status is not None:
+                results[u] = status
+    return results
 
 
 def is_noise_endpoint(url):

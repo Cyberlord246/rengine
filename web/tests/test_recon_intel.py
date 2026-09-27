@@ -11,7 +11,7 @@ from scanEngine.models import EngineType
 from startScan.models import EndPoint, ScanHistory, Subdomain, Vulnerability
 from targetApp.models import Domain
 
-from reconIntel import dedup, js_analysis, param_discovery, scoring
+from reconIntel import api_schema, dedup, js_analysis, param_discovery, scoring
 
 
 class JsAnalysisTests(TestCase):
@@ -67,6 +67,25 @@ class JsAnalysisTests(TestCase):
             'https://api.x.com/orders/123',
         ]:
             self.assertFalse(js_analysis.is_noise_endpoint(u), u)
+
+
+class ApiSchemaTests(TestCase):
+    def test_parse_openapi_extracts_paths_and_params(self):
+        doc = {
+            'openapi': '3.0.0',
+            'paths': {
+                '/api/users': {'get': {'parameters': [{'name': 'page', 'in': 'query'}]}},
+                '/api/orders/{id}': {'get': {'parameters': [{'name': 'id', 'in': 'path'}]}},
+            },
+        }
+        endpoints, params = api_schema.parse_openapi(doc, 'https://x.com')
+        self.assertIn('https://x.com/api/users', endpoints)
+        self.assertIn('https://x.com/api/orders/{id}', endpoints)
+        names = {n for n, _ in params}
+        self.assertEqual(names, {'page', 'id'})
+
+    def test_parse_openapi_handles_empty(self):
+        self.assertEqual(api_schema.parse_openapi({}, 'https://x.com'), (set(), []))
 
 
 class ParamDiscoveryTests(TestCase):

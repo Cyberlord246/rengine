@@ -3323,3 +3323,42 @@ class AutonomousApprovalDecide(APIView):
 		decision.approved_at = timezone.now()
 		decision.save()
 		return Response({'status': True})
+
+
+#-----------------------------#
+# reconIntel result views     #
+#-----------------------------#
+
+class ListDiscoveredSecrets(APIView):
+	def get(self, request):
+		scan_id = request.GET.get('scan_id')
+		qs = DiscoveredSecret.objects.all()
+		if scan_id:
+			qs = qs.filter(scan_history_id=scan_id)
+		qs = qs.filter(is_false_positive=False).order_by('-severity', 'secret_type')
+		return Response({'secrets': DiscoveredSecretSerializer(qs, many=True).data})
+
+
+class ListJsFilesWithSecrets(APIView):
+	"""Return only the JS/source files that contain at least one secret,
+	with per-file secret counts and the secret types found."""
+	def get(self, request):
+		scan_id = request.GET.get('scan_id')
+		qs = DiscoveredSecret.objects.filter(is_false_positive=False)
+		if scan_id:
+			qs = qs.filter(scan_history_id=scan_id)
+
+		files = {}
+		for secret in qs:
+			url = secret.source_url or '(unknown)'
+			entry = files.setdefault(url, {'source_url': url, 'secret_count': 0, 'types': set(), 'max_severity': 0})
+			entry['secret_count'] += 1
+			entry['types'].add(secret.secret_type)
+			entry['max_severity'] = max(entry['max_severity'], secret.severity or 0)
+
+		results = sorted(
+			({**f, 'types': sorted(f['types'])} for f in files.values()),
+			key=lambda f: (f['max_severity'], f['secret_count']),
+			reverse=True,
+		)
+		return Response({'files': results, 'file_count': len(results)})

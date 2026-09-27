@@ -10,6 +10,7 @@ from startScan.models import *
 from targetApp.models import *
 from dashboard.models import InAppNotification
 from autonomousMode.models import AssessmentDecision, AutonomousAssessment
+from reconIntel.models import DiscoveredSecret, HttpParameter, OriginIpCandidate
 
 
 class HackerOneProgramAttributesSerializer(serializers.Serializer):
@@ -1039,3 +1040,30 @@ class AssessmentDecisionSerializer(serializers.ModelSerializer):
 		if decision.subdomain:
 			return decision.subdomain.name
 		return decision.assessment.domain.name
+
+
+class DiscoveredSecretSerializer(serializers.ModelSerializer):
+	severity_label = serializers.CharField(source='get_severity_display', read_only=True)
+	subdomain_name = serializers.SerializerMethodField()
+
+	class Meta:
+		model = DiscoveredSecret
+		fields = [
+			'id', 'secret_type', 'severity', 'severity_label', 'redacted_snippet',
+			'source_url', 'subdomain_name', 'discovered_date', 'is_false_positive',
+		]
+
+	def get_subdomain_name(self, obj):
+		return obj.subdomain.name if obj.subdomain else None
+
+
+class HttpParameterSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = HttpParameter
+		fields = ['id', 'name', 'param_type', 'source', 'discovered_date']
+
+
+class OriginIpCandidateSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = OriginIpCandidate
+		fields = ['id', 'ip_address', 'source', 'confidence', 'is_behind_cdn_bypass', 'discovered_date']
