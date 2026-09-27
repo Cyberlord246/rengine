@@ -4,7 +4,9 @@ No external CLI tools. Uses `requests` and `beautifulsoup4` (already in the
 image). Endpoint regex is LinkFinder-style; secret regexes are gitleaks-style.
 """
 
+import math
 import re
+from collections import Counter
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -97,6 +99,35 @@ def extract_endpoints_from_js(js_text, base_url):
     return found
 
 
+# Generic-pattern matches are only kept when the captured value looks like a
+# real secret: long enough and high-entropy. Minified JS is full of
+# api_key/token/secret assignments to ordinary identifiers, which is pure noise
+# without this gate (gitleaks/trufflehog take the same entropy approach).
+GENERIC_MIN_LENGTH = 24
+GENERIC_MIN_ENTROPY = 3.5
+
+
+def _shannon_entropy(s):
+    if not s:
+        return 0.0
+    counts = Counter(s)
+    length = len(s)
+    return -sum((c / length) * math.log2(c / length) for c in counts.values())
+
+
+def _looks_like_secret(value):
+    if len(value) < GENERIC_MIN_LENGTH:
+        return False
+    # Real API keys/tokens almost always mix letters and digits; camelCase JS
+    # identifiers (the dominant noise source) are letters-only. Require both a
+    # letter and a digit, plus high entropy, to keep only secret-shaped values.
+    has_letter = any(c.isalpha() for c in value)
+    has_digit = any(c.isdigit() for c in value)
+    if not (has_letter and has_digit):
+        return False
+    return _shannon_entropy(value) >= GENERIC_MIN_ENTROPY
+
+
 def extract_secrets_from_text(text, source_url):
     """Return list of dicts {secret_type, severity, redacted_snippet, source_url}."""
     results = []
@@ -104,6 +135,12 @@ def extract_secrets_from_text(text, source_url):
     for name, pattern, severity in SECRET_PATTERNS:
         for match in pattern.finditer(text):
             value = match.group(0)
+            # For the broad generic pattern, gate on the CAPTURED value
+            # (group 1) with a length + entropy check to cut false positives.
+            if name == 'generic_api_key':
+                captured = match.group(1) if match.groups() else value
+                if not _looks_like_secret(captured):
+                    continue
             key = (name, value)
             if key in seen:
                 continue

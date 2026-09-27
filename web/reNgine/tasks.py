@@ -203,12 +203,16 @@ def initiate_scan(
 			),
 			# reconIntel intelligence layer — each step is opt-in via the engine
 			# YAML (skipped by RengineTask when not in engine.tasks), so this
-			# extended chain is a no-op for engines that don't enable them.
-			group(
-				js_analysis.si(ctx=ctx, description='JavaScript analysis'),
-				param_discovery.si(ctx=ctx, description='Parameter discovery'),
-				origin_ip_discovery.si(ctx=ctx, description='Origin IP discovery')
-			),
+			# extended tail is a no-op for engines that don't enable them.
+			#
+			# These run as SEQUENTIAL chain elements (not a second group). A
+			# group in the middle of a chain becomes a Celery chord, and two
+			# consecutive chords silently drop their downstream tasks, so the
+			# chain keeps exactly one mid-chain group (the vulnerability group
+			# above) and everything after it is a plain sequence.
+			js_analysis.si(ctx=ctx, description='JavaScript analysis'),
+			param_discovery.si(ctx=ctx, description='Parameter discovery'),
+			origin_ip_discovery.si(ctx=ctx, description='Origin IP discovery'),
 			response_dedup.si(ctx=ctx, description='Response dedup'),
 			finding_scoring.si(ctx=ctx, description='Finding scoring')
 		)

@@ -39,6 +39,17 @@ class JsAnalysisTests(TestCase):
     def test_mask_short_value(self):
         self.assertNotIn('secret', js_analysis._mask('secret')[1:])
 
+    def test_generic_api_key_entropy_gate_rejects_noise(self):
+        # Ordinary minified-JS assignment to a low-entropy identifier: dropped.
+        noise = 'const token = "userProfileSettingsValue";'
+        secrets = js_analysis.extract_secrets_from_text(noise, 'https://x.com/a.js')
+        self.assertFalse([s for s in secrets if s['secret_type'] == 'generic_api_key'])
+
+    def test_generic_api_key_keeps_high_entropy_value(self):
+        real = 'apiKey: "aZ39Kd8Lm2Qp7Rt5Xy1Bv4Nw6Cs0Hf"'
+        secrets = js_analysis.extract_secrets_from_text(real, 'https://x.com/a.js')
+        self.assertTrue([s for s in secrets if s['secret_type'] == 'generic_api_key'])
+
 
 class ParamDiscoveryTests(TestCase):
     def test_params_from_url(self):
