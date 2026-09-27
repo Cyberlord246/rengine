@@ -40,6 +40,9 @@ urlpatterns = [
         'scan/',
         include('startScan.urls')),
     path(
+        'autonomous/',
+        include('autonomousMode.urls')),
+    path(
         'recon_note/',
         include('recon_note.urls')),
     path(

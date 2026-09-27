@@ -90,6 +90,7 @@ INSTALLED_APPS = [
     'scanEngine.apps.ScanengineConfig',
     'startScan.apps.StartscanConfig',
     'recon_note.apps.ReconNoteConfig',
+    'autonomousMode.apps.AutonomousmodeConfig',
     'django_ace',
     'django_celery_beat',
     'mathfilters',

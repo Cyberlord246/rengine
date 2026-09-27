@@ -10,6 +10,7 @@ apps=(
     "startScan"
     "dashboard"
     "recon_note"
+    "autonomousMode"
 )
 
 create_migrations() {
@@ -254,6 +255,7 @@ workers=(
     "h8mail_queue:10:h8mail_worker"
     "theHarvester_queue:10:theHarvester_worker"
     "send_scan_notif_queue:10:send_scan_notif_worker"
+    "autonomous_queue:10:autonomous_worker"
 )
 
 for worker in "${workers[@]}"; do

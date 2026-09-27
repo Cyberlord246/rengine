@@ -22,6 +22,8 @@ from reNgine.tasks import create_scan_activity, initiate_scan, run_command
 from scanEngine.models import EngineType
 from startScan.models import *
 from targetApp.models import *
+from autonomousMode.models import AutonomousAssessment
+from autonomousMode.services import start_assessment
 
 
 def scan_history(request, slug):
@@ -268,6 +270,41 @@ def start_scan_ui(request, slug, domain_id):
 
         # Get engine type
         engine_id = request.POST['scan_mode']
+
+        # Assessment mode: manual (default, unchanged), ai_assisted or autonomous
+        assessment_mode = request.POST.get('assessment_mode', 'manual')
+
+        if assessment_mode in ('ai_assisted', 'autonomous'):
+            engine = get_object_or_404(EngineType, id=engine_id)
+            risk_level = int(request.POST.get('risk_level', AutonomousAssessment.RISK_SAFE))
+            mode = (
+                AutonomousAssessment.MODE_AI_ASSISTED
+                if assessment_mode == 'ai_assisted'
+                else AutonomousAssessment.MODE_AUTONOMOUS
+            )
+            budgets = {}
+            if request.POST.get('max_runtime_minutes'):
+                budgets['max_runtime_minutes'] = int(request.POST['max_runtime_minutes'])
+            if request.POST.get('max_actions'):
+                budgets['max_actions'] = int(request.POST['max_actions'])
+            assessment = start_assessment(
+                domain=domain,
+                engine=engine,
+                mode=mode,
+                risk_level=risk_level,
+                user=request.user,
+                imported_subdomains=subdomains_in,
+                out_of_scope_subdomains=subdomains_out,
+                starting_point_path=starting_point_path,
+                excluded_paths=excluded_paths,
+                **budgets,
+            )
+            messages.add_message(
+                request,
+                messages.INFO,
+                f'{assessment.get_mode_display()} assessment started for {domain.name}')
+            return HttpResponseRedirect(
+                reverse('assessment_status', kwargs={'slug': slug, 'assessment_id': assessment.id}))
 
         # Create ScanHistory object
         scan_history_id = create_scan_object(

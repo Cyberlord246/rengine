@@ -213,6 +213,38 @@ urlpatterns = [
         StopScan.as_view(),
         name='stop_scan'),
     path(
+        'autonomous/start/',
+        StartAutonomousAssessment.as_view(),
+        name='autonomous_start'),
+    path(
+        'autonomous/pause/',
+        PauseAutonomousAssessment.as_view(),
+        name='autonomous_pause'),
+    path(
+        'autonomous/resume/',
+        ResumeAutonomousAssessment.as_view(),
+        name='autonomous_resume'),
+    path(
+        'autonomous/stop/',
+        StopAutonomousAssessment.as_view(),
+        name='autonomous_stop'),
+    path(
+        'autonomous/status/',
+        AutonomousAssessmentStatus.as_view(),
+        name='autonomous_status'),
+    path(
+        'autonomous/events/',
+        AutonomousAssessmentEventLog.as_view(),
+        name='autonomous_events'),
+    path(
+        'autonomous/approvals/',
+        AutonomousApprovalQueue.as_view(),
+        name='autonomous_approvals'),
+    path(
+        'autonomous/approvals/decide/',
+        AutonomousApprovalDecide.as_view(),
+        name='autonomous_approvals_decide'),
+    path(
         'fetch/results/subscan/',
         FetchSubscanResults.as_view(),
         name='fetch_subscan_results'),

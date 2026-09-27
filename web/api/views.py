@@ -36,6 +36,9 @@ from api.shared_api_tasks import import_hackerone_programs_task, sync_bookmarked
 from api.permissions import *
 from api.serializers import *
 
+from autonomousMode.models import AssessmentDecision, AutonomousAssessment
+from autonomousMode import services as autonomous_services
+
 
 logger = logging.getLogger(__name__)
 
@@ -3189,3 +3192,134 @@ class VulnerabilityViewSet(viewsets.ModelViewSet):
 					print(e)
 
 		return qs
+
+
+#-----------------------------#
+# Autonomous Assessment Mode  #
+#-----------------------------#
+
+class StartAutonomousAssessment(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		data = request.data
+		domain = get_object_or_404(Domain, id=data.get('domain_id'))
+		engine = get_object_or_404(EngineType, id=data.get('engine_id'))
+
+		mode = int(data.get('mode', AutonomousAssessment.MODE_AUTONOMOUS))
+		risk_level = int(data.get('risk_level', AutonomousAssessment.RISK_SAFE))
+
+		budgets = {
+			'max_runtime_minutes': data.get('max_runtime_minutes'),
+			'max_actions': data.get('max_actions'),
+			'actions_per_tick': data.get('actions_per_tick'),
+			'tick_interval_seconds': data.get('tick_interval_seconds'),
+			'out_of_scope_subdomains': data.get('out_of_scope_subdomains', []),
+			'imported_subdomains': data.get('imported_subdomains', []),
+			'starting_point_path': data.get('starting_point_path', ''),
+			'excluded_paths': data.get('excluded_paths', []),
+		}
+		assessment = autonomous_services.start_assessment(
+			domain=domain,
+			engine=engine,
+			mode=mode,
+			risk_level=risk_level,
+			user=request.user,
+			**budgets,
+		)
+		return Response({'status': True, 'assessment_id': assessment.id})
+
+
+class PauseAutonomousAssessment(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		assessment = get_object_or_404(AutonomousAssessment, id=request.data.get('assessment_id'))
+		autonomous_services.pause_assessment(assessment)
+		return Response({'status': True})
+
+
+class ResumeAutonomousAssessment(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		assessment = get_object_or_404(AutonomousAssessment, id=request.data.get('assessment_id'))
+		autonomous_services.resume_assessment(assessment)
+		return Response({'status': True})
+
+
+class StopAutonomousAssessment(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		assessment = get_object_or_404(AutonomousAssessment, id=request.data.get('assessment_id'))
+		reason = request.data.get('reason', 'Stopped by user')
+		autonomous_services.stop_assessment(assessment, reason=reason)
+		return Response({'status': True})
+
+
+class AutonomousAssessmentStatus(APIView):
+	def get(self, request):
+		assessment_id = request.GET.get('assessment_id')
+		project_slug = request.GET.get('project')
+
+		if assessment_id:
+			assessment = get_object_or_404(AutonomousAssessment, id=assessment_id)
+			data = AutonomousAssessmentSerializer(assessment).data
+			data['decision_counts'] = {
+				row['policy_result']: row['count']
+				for row in assessment.decisions.values('policy_result').annotate(count=Count('id'))
+			}
+			return Response(data)
+
+		assessments = AutonomousAssessment.objects.all()
+		if project_slug:
+			assessments = assessments.filter(domain__project__slug=project_slug)
+		assessments = assessments.order_by('-started_at')[:20]
+		return Response({'results': AutonomousAssessmentSerializer(assessments, many=True).data})
+
+
+class AutonomousAssessmentEventLog(APIView):
+	def get(self, request):
+		assessment = get_object_or_404(AutonomousAssessment, id=request.GET.get('assessment_id'))
+		since_id = int(request.GET.get('since_id', 0))
+		events = (
+			assessment.decisions
+			.filter(sequence__gt=since_id)
+			.order_by('sequence')
+		)
+		serialized = AssessmentDecisionSerializer(events, many=True).data
+		last_id = serialized[-1]['sequence'] if serialized else since_id
+		return Response({'events': serialized, 'last_id': last_id})
+
+
+class AutonomousApprovalQueue(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def get(self, request):
+		assessment = get_object_or_404(AutonomousAssessment, id=request.GET.get('assessment_id'))
+		pending = assessment.decisions.filter(
+			policy_result=AssessmentDecision.POLICY_REQUIRES_APPROVAL,
+			status=AssessmentDecision.STATUS_PENDING,
+		)
+		return Response({'results': AssessmentDecisionSerializer(pending, many=True).data})
+
+
+class AutonomousApprovalDecide(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		decision = get_object_or_404(AssessmentDecision, id=request.data.get('decision_id'))
+		approve = bool(request.data.get('approve'))
+
+		decision.status = AssessmentDecision.STATUS_APPROVED if approve else AssessmentDecision.STATUS_REJECTED
+		decision.approved_by = request.user
+		decision.approved_at = timezone.now()
+		decision.save()
+		return Response({'status': True})
