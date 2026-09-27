@@ -21,9 +21,16 @@ SUBDOMAIN_LEVEL_ACTIONS = [
     'port_scan',
     'fetch_url',
     'dir_file_fuzz',
+    'js_analysis',
+    'param_discovery',
     'vulnerability_scan',
 ]
 assert set(SUBDOMAIN_LEVEL_ACTIONS) <= KNOWN_SUBSCAN_ACTIONS
+
+# Scan-level reconIntel steps (origin_ip_discovery, response_dedup,
+# finding_scoring) are NOT proposed per-subdomain: they run once scan-wide as
+# part of the initiate_scan() bootstrap chain, so the loop does not re-dispatch
+# them per asset.
 
 # Technology names (lowercase substring match) considered high value enough
 # to bump priority - kept intentionally small and generic.
@@ -89,11 +96,17 @@ def _score_candidate(assessment, subdomain, action_type):
         score += IMPORTANT_OR_HIGH_VALUE_TECH_WEIGHT
         reasons.append('marked important or running high-value technology')
 
-    if action_type in ('dir_file_fuzz', 'vulnerability_scan'):
+    if action_type in ('dir_file_fuzz', 'vulnerability_scan', 'js_analysis', 'param_discovery'):
         endpoint_count = EndPoint.objects.filter(subdomain=subdomain).count()
         if endpoint_count > 0:
             score += ENDPOINT_GROWTH_WEIGHT
             reasons.append(f'{endpoint_count} endpoint(s) discovered on this asset')
+
+    if action_type == 'js_analysis' and _is_alive(subdomain):
+        # JS mining tends to surface new API endpoints on live web assets -
+        # high information gain, so prioritize it on any reachable asset.
+        score += NEW_ASSET_ALIVE_WEIGHT
+        reasons.append('live web asset likely serving JavaScript with hidden endpoints')
 
     if action_type == 'vulnerability_scan':
         if Vulnerability.objects.filter(subdomain=subdomain, open_status=True).exists():
@@ -149,5 +162,7 @@ def _expected_outcome(action_type):
         'port_scan': 'Identify additional open ports/services on this asset',
         'fetch_url': 'Discover live URLs/endpoints on this asset',
         'dir_file_fuzz': 'Uncover additional directories/files on this asset',
+        'js_analysis': 'Extract hidden API endpoints and secrets from JavaScript',
+        'param_discovery': 'Discover hidden request parameters for deeper testing',
         'vulnerability_scan': 'Identify or validate vulnerabilities on this asset',
     }.get(action_type, 'Gather additional information about this asset')

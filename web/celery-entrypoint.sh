@@ -11,6 +11,7 @@ apps=(
     "dashboard"
     "recon_note"
     "autonomousMode"
+    "reconIntel"
 )
 
 create_migrations() {
@@ -256,6 +257,7 @@ workers=(
     "theHarvester_queue:10:theHarvester_worker"
     "send_scan_notif_queue:10:send_scan_notif_worker"
     "autonomous_queue:10:autonomous_worker"
+    "reconintel_queue:10:reconintel_worker"
 )
 
 for worker in "${workers[@]}"; do

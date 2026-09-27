@@ -200,7 +200,17 @@ def initiate_scan(
 				vulnerability_scan.si(ctx=ctx, description='Vulnerability scan'),
 				screenshot.si(ctx=ctx, description='Screenshot'),
 				waf_detection.si(ctx=ctx, description='WAF detection')
-			)
+			),
+			# reconIntel intelligence layer — each step is opt-in via the engine
+			# YAML (skipped by RengineTask when not in engine.tasks), so this
+			# extended chain is a no-op for engines that don't enable them.
+			group(
+				js_analysis.si(ctx=ctx, description='JavaScript analysis'),
+				param_discovery.si(ctx=ctx, description='Parameter discovery'),
+				origin_ip_discovery.si(ctx=ctx, description='Origin IP discovery')
+			),
+			response_dedup.si(ctx=ctx, description='Response dedup'),
+			finding_scoring.si(ctx=ctx, description='Finding scoring')
 		)
 
 		# Build callback
@@ -3021,7 +3031,7 @@ def http_crawl(
 				subscan=self.subscan,
 				cdn=cdn)
 			self.notify(
-				fields={'IPs': f'• `{ip.address}`'},
+				fields={'IPs': f'• `{ip.address}`'} if ip else {},
 				add_meta_info=False)
 
 		# Save subdomain and endpoint
@@ -4733,3 +4743,22 @@ def llm_vulnerability_description(vulnerability_id):
 			vuln.save()
 
 	return response
+
+
+# ---------------------------------------------------------------------------
+# reconIntel intelligence-layer tasks
+#
+# Imported here at the end so every symbol above (e.g. save_endpoint) is
+# defined before reconIntel.tasks loads. This brings js_analysis,
+# param_discovery, origin_ip_discovery, response_dedup and finding_scoring into
+# reNgine.tasks' namespace so (a) the initiate_scan() chain can reference them
+# and (b) initiate_subscan()'s globals().get(scan_type) dispatch can resolve
+# them as autonomous subscan actions.
+# ---------------------------------------------------------------------------
+from reconIntel.tasks import (
+	js_analysis,
+	param_discovery,
+	origin_ip_discovery,
+	response_dedup,
+	finding_scoring,
+)

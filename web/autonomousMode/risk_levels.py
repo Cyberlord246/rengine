@@ -13,6 +13,14 @@ PASSIVE_RECON_ACTIONS = {
     'osint',
     'screenshot',
     'waf_detection',
+    # reconIntel passive intelligence steps: all read-only / OSINT-grade
+    # (fetch JS already served, query Wayback/crt.sh, score findings already
+    # in the DB), so they belong at the SAFE tier alongside other passive recon.
+    'js_analysis',
+    'param_discovery',
+    'origin_ip_discovery',
+    'response_dedup',
+    'finding_scoring',
 }
 
 ACTIVE_SCAN_ACTIONS = {
