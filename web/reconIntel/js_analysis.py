@@ -52,6 +52,25 @@ API_SCHEMA_PATHS = [
 DEFAULT_TIMEOUT = 10
 MAX_JS_BYTES = 5 * 1024 * 1024  # don't slurp giant bundles
 
+# Endpoints that are static assets are noise for an attack-surface map: they
+# are not testable app/API routes, and minified JS references thousands of
+# them, which floods the endpoint table. Filter them out at the source.
+STATIC_ENDPOINT_EXTENSIONS = {
+    'js', 'mjs', 'css', 'map',
+    'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'avif', 'ico', 'bmp', 'tiff',
+    'woff', 'woff2', 'ttf', 'eot', 'otf',
+    'mp4', 'webm', 'mp3', 'wav', 'ogg', 'mov', 'avi',
+    'pdf', 'zip', 'gz', 'tar', 'rar', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+}
+# Path fragments that mark bundled/static/CDN asset URLs rather than routes.
+ASSET_PATH_MARKERS = [
+    '/_next/static/', '/static/', '/assets/', '/dims4/', '/fonts/',
+    '/font/', '/images/', '/img/', '/media/', '/cdn-cgi/',
+]
+# Hard cap on endpoints a single js_analysis run will keep, so a pathological
+# bundle can never flood the DB / UI.
+DEFAULT_MAX_JS_ENDPOINTS = 300
+
 
 def _fetch(url, proxy=None, timeout=DEFAULT_TIMEOUT):
     proxies = {'http': proxy, 'https': proxy} if proxy else None
@@ -82,20 +101,40 @@ def extract_js_urls(page_url, html):
     return js_urls, inline_blobs
 
 
+NAMESPACE_HOSTS = {'www.w3.org', 'schemas.xmlsoap.org', 'www.opengis.net'}
+
+
+def _clean_candidate(raw):
+    """Strip JS-string escape artifacts; return None if the value is not a
+    usable URL/path (contains escapes, whitespace, or markup)."""
+    if not raw:
+        return None
+    # Trailing escape/quote debris from minified JS string literals.
+    raw = raw.rstrip('\\"\' ')
+    # Reject anything still carrying escape sequences or markup - these are
+    # capture artifacts, not real endpoints.
+    if any(tok in raw for tok in ('\\', '\\u', ' ', '\t', '\n', '<', '>', '{', '}', '`', '$')):
+        return None
+    return raw or None
+
+
 def extract_endpoints_from_js(js_text, base_url):
     """Return a set of absolute-ish endpoint strings found in JS text."""
     found = set()
     for match in ENDPOINT_REGEX.finditer(js_text):
-        raw = match.group(1)
+        raw = _clean_candidate(match.group(1))
         if not raw or len(raw) < 3:
             continue
-        # Skip obvious noise: file extensions we don't care about, mime types.
-        if raw.startswith(('data:', 'javascript:', 'mailto:', 'tel:')):
+        if raw.startswith(('data:', 'javascript:', 'mailto:', 'tel:', '#')):
             continue
         if raw.startswith(('http://', 'https://', '//')):
-            found.add(raw if not raw.startswith('//') else 'https:' + raw)
+            url = raw if not raw.startswith('//') else 'https:' + raw
         else:
-            found.add(urljoin(base_url, raw))
+            url = urljoin(base_url, raw)
+        # Drop XML/SVG namespace URLs - never real endpoints.
+        if urlparse(url).netloc in NAMESPACE_HOSTS:
+            continue
+        found.add(url)
     return found
 
 
@@ -192,14 +231,34 @@ def analyze_url(url, base_host, scope_checker=None, proxy=None):
             endpoints |= extract_endpoints_from_js(js_text, js_url)
             secrets += extract_secrets_from_text(js_text, js_url)
 
-    # Scope filter on host of each endpoint.
-    if scope_checker:
-        filtered = set()
-        for ep in endpoints:
+    # Drop static assets / bundle URLs, then scope-filter on host.
+    kept = set()
+    for ep in endpoints:
+        if is_noise_endpoint(ep):
+            continue
+        if scope_checker:
             host = urlparse(ep).netloc.split(':')[0]
             if host and scope_checker.is_out_of_scope(host):
                 continue
-            filtered.add(ep)
-        endpoints = filtered
+        kept.add(ep)
 
-    return endpoints, secrets
+    return kept, secrets
+
+
+def is_noise_endpoint(url):
+    """True if the URL is a static asset / bundle reference rather than a
+    testable app or API route."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return True
+    path = (parsed.path or '').lower()
+    # Static file extension.
+    if '.' in path.rsplit('/', 1)[-1]:
+        ext = path.rsplit('.', 1)[-1]
+        if ext in STATIC_ENDPOINT_EXTENSIONS:
+            return True
+    # Known static/bundle/CDN path markers.
+    if any(marker in path for marker in ASSET_PATH_MARKERS):
+        return True
+    return False

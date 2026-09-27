@@ -50,6 +50,24 @@ class JsAnalysisTests(TestCase):
         secrets = js_analysis.extract_secrets_from_text(real, 'https://x.com/a.js')
         self.assertTrue([s for s in secrets if s['secret_type'] == 'generic_api_key'])
 
+    def test_static_assets_flagged_as_noise(self):
+        for u in [
+            'https://x.com/_next/static/chunks/app.js',
+            'https://cdn.x.com/dims4/default/abc/resize/img.png',
+            'https://x.com/static/media/logo.svg',
+            'https://x.com/fonts/roboto.woff2',
+            'https://x.com/app.css',
+        ]:
+            self.assertTrue(js_analysis.is_noise_endpoint(u), u)
+
+    def test_real_routes_not_flagged_as_noise(self):
+        for u in [
+            'https://x.com/api/v1/users',
+            'https://x.com/account/settings',
+            'https://api.x.com/orders/123',
+        ]:
+            self.assertFalse(js_analysis.is_noise_endpoint(u), u)
+
 
 class ParamDiscoveryTests(TestCase):
     def test_params_from_url(self):

@@ -55,6 +55,9 @@ def js_analysis(self, urls=[], ctx={}, description=None):
     if not urls:
         urls = [s.http_url for s in Subdomain.objects.filter(scan_history=self.scan) if s.http_url]
 
+    cfg = self.yaml_configuration.get('js_analysis') or {}
+    max_endpoints = cfg.get('max_js_endpoints', js_mod.DEFAULT_MAX_JS_ENDPOINTS)
+
     all_endpoints = set()
     total_secrets = 0
     for url in urls:
@@ -75,15 +78,22 @@ def js_analysis(self, urls=[], ctx={}, description=None):
             if created:
                 total_secrets += 1
 
+    # Cap how many endpoints one run may persist so a pathological JS bundle
+    # can never flood the endpoint table (the noise that can overwhelm the UI).
+    discovered = len(all_endpoints)
+    capped = sorted(all_endpoints)[:max_endpoints]
+
     if self.subscan_id:
         ctx = {**ctx, 'subscan_id': self.subscan_id}
-    new_endpoints = _save_endpoint_urls(all_endpoints, ctx)
+    new_endpoints = _save_endpoint_urls(capped, ctx)
     self.notify(fields={
-        'JS endpoints discovered': len(all_endpoints),
+        'JS endpoints discovered': discovered,
+        'Endpoints kept (cap %d)' % max_endpoints: len(capped),
         'New endpoints saved': new_endpoints,
         'Secrets found': total_secrets,
     })
-    return {'endpoints': len(all_endpoints), 'new_endpoints': new_endpoints, 'secrets': total_secrets}
+    return {'endpoints': discovered, 'kept': len(capped),
+            'new_endpoints': new_endpoints, 'secrets': total_secrets}
 
 
 @app.task(name='param_discovery', queue='reconintel_queue', base=RengineTask, bind=True)
