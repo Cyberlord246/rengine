@@ -2582,7 +2582,10 @@ def dalfox_xss_scan(self, urls=[], ctx={}, description=None):
 
 	# command builder
 	cmd = 'dalfox --silence --no-color --no-spinner'
-	cmd += f' --only-poc r '
+	# Only report VERIFIED PoCs (dalfox type 'v'), not merely reflected ('r').
+	# Reflection != execution, which is the main dalfox XSS false-positive
+	# source, so we let dalfox confirm the payload actually triggers first.
+	cmd += f' --only-poc v '
 	cmd += f' --ignore-return 302,404,403'
 	cmd += f' --skip-bav'
 	cmd += f' file {input_path}'
@@ -2607,6 +2610,16 @@ def dalfox_xss_scan(self, urls=[], ctx={}, description=None):
 			trunc_char=','
 		):
 		if not isinstance(line, dict):
+			continue
+
+		# Confirm-before-report: only accept dalfox VERIFIED findings. dalfox
+		# tags each PoC with a type - g(grep)/r(reflected)/v(verified). Reflected
+		# means the payload appears in the response but was not confirmed to
+		# execute, which produces most XSS false positives, so we drop anything
+		# that is not verified.
+		poc_type = str(line.get('type', '')).strip().lower()
+		if poc_type and poc_type[0] not in ('v',) and 'verif' not in poc_type:
+			logger.info(f"Skipping unverified dalfox XSS ({poc_type or 'no-type'}) on {line.get('data')}")
 			continue
 
 		results.append(line)
@@ -3713,7 +3726,10 @@ def parse_dalfox_result(line):
 		dict: Vulnerability data.
 	"""
 
+	poc_type = str(line.get('type', '')).strip()
 	description = ''
+	description += " Confirmation: dalfox-verified PoC <br>" if poc_type and poc_type.lower().startswith('v') else ''
+	description += f" PoC type: {poc_type} <br>" if poc_type else ''
 	description += f" Evidence: {line.get('evidence')} <br>" if line.get('evidence') else ''
 	description += f" Message: {line.get('message')} <br>" if line.get('message') else ''
 	description += f" Payload: {line.get('message_str')} <br>" if line.get('message_str') else ''
@@ -4766,3 +4782,6 @@ from reconIntel.tasks import (
 	response_dedup,
 	finding_scoring,
 )
+
+# multiScan orchestrator tasks (multi-domain coordinated assessment).
+from multiScan.tasks import assessment_tick, assessment_watchdog

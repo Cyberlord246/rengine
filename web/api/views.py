@@ -39,6 +39,10 @@ from api.serializers import *
 from autonomousMode.models import AssessmentDecision, AutonomousAssessment
 from autonomousMode import services as autonomous_services
 
+from multiScan.models import Assessment as MultiAssessment, AssessmentDomainRun
+from multiScan import services as multiscan_services
+from multiScan.report import build_report as build_multiscan_report
+
 
 logger = logging.getLogger(__name__)
 
@@ -2677,13 +2681,17 @@ class EndPointViewSet(viewsets.ModelViewSet):
 		if 'only_urls' in req.query_params:
 			self.serializer_class = EndpointOnlyURLsSerializer
 
-		# Filter status code 404 and 0
-		# endpoints = (
-		# 	endpoints
-		# 	.exclude(http_status=0)
-		# 	.exclude(http_status=None)
-		# 	.exclude(http_status=404)
-		# )
+		# By default the URLs/Endpoints section reports only endpoints that
+		# returned an ACTUAL response (HTTP 2xx/3xx). 404/403/401 and 5xx
+		# errors, and unprobed (0/None) endpoints, are hidden as noise.
+		# Pass ?include_all=true to see every endpoint regardless of status.
+		include_all = str(req.query_params.get('include_all', '')).lower() in ('1', 'true', 'yes')
+		if not include_all:
+			endpoints = (
+				endpoints
+				.exclude(http_status__isnull=True)
+				.filter(http_status__gte=200, http_status__lt=400)
+			)
 
 		self.queryset = endpoints
 
@@ -3362,3 +3370,77 @@ class ListJsFilesWithSecrets(APIView):
 			reverse=True,
 		)
 		return Response({'files': results, 'file_count': len(results)})
+
+
+#-----------------------------#
+# multiScan assessment views  #
+#-----------------------------#
+
+class StartMultiAssessment(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		data = request.data
+		domain_ids = data.get('domain_ids', [])
+		domains = list(Domain.objects.filter(id__in=domain_ids))
+		if not domains:
+			return Response({'status': False, 'message': 'No valid domains'}, status=HTTP_400_BAD_REQUEST)
+		engine = get_object_or_404(EngineType, id=data.get('engine_id'))
+		project = domains[0].project
+		assessment = multiscan_services.start_assessment(
+			name=data.get('name') or f'Assessment ({len(domains)} domains)',
+			project=project,
+			engine=engine,
+			domains=domains,
+			user=request.user,
+			batch_size=data.get('batch_size'),
+			tick_interval_seconds=data.get('tick_interval_seconds'),
+			max_runtime_minutes=data.get('max_runtime_minutes'),
+			out_of_scope_subdomains=data.get('out_of_scope_subdomains', []),
+		)
+		return Response({'status': True, 'assessment_id': assessment.id})
+
+
+class PauseMultiAssessment(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		a = get_object_or_404(MultiAssessment, id=request.data.get('assessment_id'))
+		multiscan_services.pause_assessment(a)
+		return Response({'status': True})
+
+
+class ResumeMultiAssessment(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		a = get_object_or_404(MultiAssessment, id=request.data.get('assessment_id'))
+		multiscan_services.resume_assessment(a)
+		return Response({'status': True})
+
+
+class StopMultiAssessment(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		a = get_object_or_404(MultiAssessment, id=request.data.get('assessment_id'))
+		multiscan_services.stop_assessment(a, reason=request.data.get('reason', 'Stopped by user'))
+		return Response({'status': True})
+
+
+class MultiAssessmentStatus(APIView):
+	def get(self, request):
+		a = get_object_or_404(MultiAssessment, id=request.GET.get('assessment_id'))
+		data = AssessmentSerializer(a).data
+		data['domain_runs'] = AssessmentDomainRunSerializer(a.domain_runs.all(), many=True).data
+		return Response(data)
+
+
+class MultiAssessmentReport(APIView):
+	def get(self, request):
+		a = get_object_or_404(MultiAssessment, id=request.GET.get('assessment_id'))
+		return Response(build_multiscan_report(a))

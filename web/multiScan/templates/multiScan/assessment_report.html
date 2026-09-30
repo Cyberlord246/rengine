@@ -1,0 +1,85 @@
+{% extends 'base/base.html' %}
+{% load static %}
+
+{% block title %}Assessment Report{% endblock title %}
+
+{% block custom_js_css_link %}
+<script src="{% static 'custom/custom.js' %}"></script>
+{% endblock custom_js_css_link %}
+
+{% block breadcrumb_title %}
+<li class="breadcrumb-item active" aria-current="page">Assessment Report</li>
+{% endblock breadcrumb_title %}
+
+{% block page_title %}
+Consolidated Assessment &mdash; {{ assessment.name }}
+{% endblock page_title %}
+
+{% block main_content %}
+<div id="assessment-report-root" data-assessment-id="{{ assessment.id }}">
+  <div class="row">
+    <div class="col-12">
+      <div class="card"><div class="card-body">
+        <h4 class="header-title">Overview</h4>
+        <div class="row">
+          <div class="col-md-3"><strong>Status:</strong> <span id="ar-status">{{ assessment.get_status_display }}</span></div>
+          <div class="col-md-3"><strong>Engine:</strong> {{ assessment.engine.engine_name }}</div>
+          <div class="col-md-3"><strong>Batch size:</strong> {{ assessment.batch_size }}</div>
+          <div class="col-md-3"><strong>Domains:</strong> <span id="ar-domaincount"></span></div>
+        </div>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="col-md-6"><div class="card"><div class="card-body">
+      <h4 class="header-title">Per-domain results</h4>
+      <div class="table-responsive" style="max-height:420px;overflow:auto;">
+        <table class="table table-sm table-striped">
+          <thead><tr><th>Domain</th><th>Status</th><th>Subdomains</th><th>Live endpoints</th><th>Vulns</th></tr></thead>
+          <tbody id="ar-domains"></tbody>
+        </table>
+      </div>
+    </div></div></div>
+    <div class="col-md-6"><div class="card"><div class="card-body">
+      <h4 class="header-title">Endpoint candidates by category</h4>
+      <div class="table-responsive" style="max-height:420px;overflow:auto;">
+        <table class="table table-sm table-striped">
+          <thead><tr><th>Category</th><th>Count</th></tr></thead>
+          <tbody id="ar-categories"></tbody>
+        </table>
+      </div>
+      <small class="text-muted">Candidates for manual validation &mdash; not auto-exploited.</small>
+    </div></div></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var root = document.getElementById('assessment-report-root');
+  var id = root.getAttribute('data-assessment-id');
+  function esc(s){var d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML;}
+  function load() {
+    fetch('/api/multiscan/report/?assessment_id=' + id).then(function(r){return r.json();}).then(function(d){
+      document.getElementById('ar-status').textContent = d.status;
+      var s = d.summary || {totals:{},domains:[]};
+      document.getElementById('ar-domaincount').textContent = (s.totals && s.totals.domains) || 0;
+      var db = document.getElementById('ar-domains'); db.innerHTML='';
+      (s.domains||[]).forEach(function(row){
+        var tr=document.createElement('tr');
+        tr.innerHTML='<td>'+esc(row.domain)+'</td><td>'+esc(row.status)+'</td><td>'+esc(row.subdomains)+'</td><td>'+esc(row.live_endpoints)+'</td><td>'+esc(row.vulnerabilities)+'</td>';
+        db.appendChild(tr);
+      });
+      var cb=document.getElementById('ar-categories'); cb.innerHTML='';
+      var counts=d.category_counts||{};
+      Object.keys(counts).sort(function(a,b){return counts[b]-counts[a];}).forEach(function(k){
+        var tr=document.createElement('tr');
+        tr.innerHTML='<td>'+esc(k)+'</td><td>'+esc(counts[k])+'</td>';
+        cb.appendChild(tr);
+      });
+    });
+  }
+  document.addEventListener('DOMContentLoaded', function(){ load(); setInterval(load, 7000); });
+})();
+</script>
+{% endblock main_content %}

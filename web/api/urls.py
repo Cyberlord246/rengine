@@ -253,6 +253,30 @@ urlpatterns = [
         ListJsFilesWithSecrets.as_view(),
         name='recon_intel_js_files_with_secrets'),
     path(
+        'multiscan/start/',
+        StartMultiAssessment.as_view(),
+        name='multiscan_start'),
+    path(
+        'multiscan/pause/',
+        PauseMultiAssessment.as_view(),
+        name='multiscan_pause'),
+    path(
+        'multiscan/resume/',
+        ResumeMultiAssessment.as_view(),
+        name='multiscan_resume'),
+    path(
+        'multiscan/stop/',
+        StopMultiAssessment.as_view(),
+        name='multiscan_stop'),
+    path(
+        'multiscan/status/',
+        MultiAssessmentStatus.as_view(),
+        name='multiscan_status'),
+    path(
+        'multiscan/report/',
+        MultiAssessmentReport.as_view(),
+        name='multiscan_report'),
+    path(
         'fetch/results/subscan/',
         FetchSubscanResults.as_view(),
         name='fetch_subscan_results'),
