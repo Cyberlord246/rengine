@@ -115,3 +115,16 @@ screenshot: {
   'timeout': 10,
   'threads': 40
 }
+# reconIntel intelligence layer (opt-in). Uncomment a block to enable that step
+# in this engine. All steps are pure-Python and passive (JS is fetched as
+# served; Wayback/crt.sh are queried read-only; scoring/dedup act on data
+# already in the DB). Enabling them also lets Autonomous Mode dispatch the
+# per-asset ones (js_analysis, param_discovery) and runs the scan-level ones
+# (origin_ip_discovery, response_dedup, finding_scoring) once per scan.
+# js_analysis: {
+#   'enable_http_crawl': true
+# }
+# param_discovery: {}
+# origin_ip_discovery: {}
+# response_dedup: {}
+# finding_scoring: {}

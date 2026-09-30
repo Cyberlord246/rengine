@@ -36,6 +36,13 @@ from api.shared_api_tasks import import_hackerone_programs_task, sync_bookmarked
 from api.permissions import *
 from api.serializers import *
 
+from autonomousMode.models import AssessmentDecision, AutonomousAssessment
+from autonomousMode import services as autonomous_services
+
+from multiScan.models import Assessment as MultiAssessment, AssessmentDomainRun
+from multiScan import services as multiscan_services
+from multiScan.report import build_report as build_multiscan_report
+
 
 logger = logging.getLogger(__name__)
 
@@ -2674,13 +2681,17 @@ class EndPointViewSet(viewsets.ModelViewSet):
 		if 'only_urls' in req.query_params:
 			self.serializer_class = EndpointOnlyURLsSerializer
 
-		# Filter status code 404 and 0
-		# endpoints = (
-		# 	endpoints
-		# 	.exclude(http_status=0)
-		# 	.exclude(http_status=None)
-		# 	.exclude(http_status=404)
-		# )
+		# By default the URLs/Endpoints section reports only endpoints that
+		# returned an ACTUAL response (HTTP 2xx/3xx). 404/403/401 and 5xx
+		# errors, and unprobed (0/None) endpoints, are hidden as noise.
+		# Pass ?include_all=true to see every endpoint regardless of status.
+		include_all = str(req.query_params.get('include_all', '')).lower() in ('1', 'true', 'yes')
+		if not include_all:
+			endpoints = (
+				endpoints
+				.exclude(http_status__isnull=True)
+				.filter(http_status__gte=200, http_status__lt=400)
+			)
 
 		self.queryset = endpoints
 
@@ -3189,3 +3200,247 @@ class VulnerabilityViewSet(viewsets.ModelViewSet):
 					print(e)
 
 		return qs
+
+
+#-----------------------------#
+# Autonomous Assessment Mode  #
+#-----------------------------#
+
+class StartAutonomousAssessment(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		data = request.data
+		domain = get_object_or_404(Domain, id=data.get('domain_id'))
+		engine = get_object_or_404(EngineType, id=data.get('engine_id'))
+
+		mode = int(data.get('mode', AutonomousAssessment.MODE_AUTONOMOUS))
+		risk_level = int(data.get('risk_level', AutonomousAssessment.RISK_SAFE))
+
+		budgets = {
+			'max_runtime_minutes': data.get('max_runtime_minutes'),
+			'max_actions': data.get('max_actions'),
+			'actions_per_tick': data.get('actions_per_tick'),
+			'tick_interval_seconds': data.get('tick_interval_seconds'),
+			'out_of_scope_subdomains': data.get('out_of_scope_subdomains', []),
+			'imported_subdomains': data.get('imported_subdomains', []),
+			'starting_point_path': data.get('starting_point_path', ''),
+			'excluded_paths': data.get('excluded_paths', []),
+		}
+		assessment = autonomous_services.start_assessment(
+			domain=domain,
+			engine=engine,
+			mode=mode,
+			risk_level=risk_level,
+			user=request.user,
+			**budgets,
+		)
+		return Response({'status': True, 'assessment_id': assessment.id})
+
+
+class PauseAutonomousAssessment(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		assessment = get_object_or_404(AutonomousAssessment, id=request.data.get('assessment_id'))
+		autonomous_services.pause_assessment(assessment)
+		return Response({'status': True})
+
+
+class ResumeAutonomousAssessment(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		assessment = get_object_or_404(AutonomousAssessment, id=request.data.get('assessment_id'))
+		autonomous_services.resume_assessment(assessment)
+		return Response({'status': True})
+
+
+class StopAutonomousAssessment(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		assessment = get_object_or_404(AutonomousAssessment, id=request.data.get('assessment_id'))
+		reason = request.data.get('reason', 'Stopped by user')
+		autonomous_services.stop_assessment(assessment, reason=reason)
+		return Response({'status': True})
+
+
+class AutonomousAssessmentStatus(APIView):
+	def get(self, request):
+		assessment_id = request.GET.get('assessment_id')
+		project_slug = request.GET.get('project')
+
+		if assessment_id:
+			assessment = get_object_or_404(AutonomousAssessment, id=assessment_id)
+			data = AutonomousAssessmentSerializer(assessment).data
+			data['decision_counts'] = {
+				row['policy_result']: row['count']
+				for row in assessment.decisions.values('policy_result').annotate(count=Count('id'))
+			}
+			return Response(data)
+
+		assessments = AutonomousAssessment.objects.all()
+		if project_slug:
+			assessments = assessments.filter(domain__project__slug=project_slug)
+		assessments = assessments.order_by('-started_at')[:20]
+		return Response({'results': AutonomousAssessmentSerializer(assessments, many=True).data})
+
+
+class AutonomousAssessmentEventLog(APIView):
+	def get(self, request):
+		assessment = get_object_or_404(AutonomousAssessment, id=request.GET.get('assessment_id'))
+		since_id = int(request.GET.get('since_id', 0))
+		events = (
+			assessment.decisions
+			.filter(sequence__gt=since_id)
+			.order_by('sequence')
+		)
+		serialized = AssessmentDecisionSerializer(events, many=True).data
+		last_id = serialized[-1]['sequence'] if serialized else since_id
+		return Response({'events': serialized, 'last_id': last_id})
+
+
+class AutonomousApprovalQueue(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def get(self, request):
+		assessment = get_object_or_404(AutonomousAssessment, id=request.GET.get('assessment_id'))
+		pending = assessment.decisions.filter(
+			policy_result=AssessmentDecision.POLICY_REQUIRES_APPROVAL,
+			status=AssessmentDecision.STATUS_PENDING,
+		)
+		return Response({'results': AssessmentDecisionSerializer(pending, many=True).data})
+
+
+class AutonomousApprovalDecide(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		decision = get_object_or_404(AssessmentDecision, id=request.data.get('decision_id'))
+		approve = bool(request.data.get('approve'))
+
+		decision.status = AssessmentDecision.STATUS_APPROVED if approve else AssessmentDecision.STATUS_REJECTED
+		decision.approved_by = request.user
+		decision.approved_at = timezone.now()
+		decision.save()
+		return Response({'status': True})
+
+
+#-----------------------------#
+# reconIntel result views     #
+#-----------------------------#
+
+class ListDiscoveredSecrets(APIView):
+	def get(self, request):
+		scan_id = request.GET.get('scan_id')
+		qs = DiscoveredSecret.objects.all()
+		if scan_id:
+			qs = qs.filter(scan_history_id=scan_id)
+		qs = qs.filter(is_false_positive=False).order_by('-severity', 'secret_type')
+		return Response({'secrets': DiscoveredSecretSerializer(qs, many=True).data})
+
+
+class ListJsFilesWithSecrets(APIView):
+	"""Return only the JS/source files that contain at least one secret,
+	with per-file secret counts and the secret types found."""
+	def get(self, request):
+		scan_id = request.GET.get('scan_id')
+		qs = DiscoveredSecret.objects.filter(is_false_positive=False)
+		if scan_id:
+			qs = qs.filter(scan_history_id=scan_id)
+
+		files = {}
+		for secret in qs:
+			url = secret.source_url or '(unknown)'
+			entry = files.setdefault(url, {'source_url': url, 'secret_count': 0, 'types': set(), 'max_severity': 0})
+			entry['secret_count'] += 1
+			entry['types'].add(secret.secret_type)
+			entry['max_severity'] = max(entry['max_severity'], secret.severity or 0)
+
+		results = sorted(
+			({**f, 'types': sorted(f['types'])} for f in files.values()),
+			key=lambda f: (f['max_severity'], f['secret_count']),
+			reverse=True,
+		)
+		return Response({'files': results, 'file_count': len(results)})
+
+
+#-----------------------------#
+# multiScan assessment views  #
+#-----------------------------#
+
+class StartMultiAssessment(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		data = request.data
+		domain_ids = data.get('domain_ids', [])
+		domains = list(Domain.objects.filter(id__in=domain_ids))
+		if not domains:
+			return Response({'status': False, 'message': 'No valid domains'}, status=HTTP_400_BAD_REQUEST)
+		engine = get_object_or_404(EngineType, id=data.get('engine_id'))
+		project = domains[0].project
+		assessment = multiscan_services.start_assessment(
+			name=data.get('name') or f'Assessment ({len(domains)} domains)',
+			project=project,
+			engine=engine,
+			domains=domains,
+			user=request.user,
+			batch_size=data.get('batch_size'),
+			tick_interval_seconds=data.get('tick_interval_seconds'),
+			max_runtime_minutes=data.get('max_runtime_minutes'),
+			out_of_scope_subdomains=data.get('out_of_scope_subdomains', []),
+		)
+		return Response({'status': True, 'assessment_id': assessment.id})
+
+
+class PauseMultiAssessment(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		a = get_object_or_404(MultiAssessment, id=request.data.get('assessment_id'))
+		multiscan_services.pause_assessment(a)
+		return Response({'status': True})
+
+
+class ResumeMultiAssessment(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		a = get_object_or_404(MultiAssessment, id=request.data.get('assessment_id'))
+		multiscan_services.resume_assessment(a)
+		return Response({'status': True})
+
+
+class StopMultiAssessment(APIView):
+	permission_classes = [HasPermission]
+	permission_required = PERM_INITATE_SCANS_SUBSCANS
+
+	def post(self, request):
+		a = get_object_or_404(MultiAssessment, id=request.data.get('assessment_id'))
+		multiscan_services.stop_assessment(a, reason=request.data.get('reason', 'Stopped by user'))
+		return Response({'status': True})
+
+
+class MultiAssessmentStatus(APIView):
+	def get(self, request):
+		a = get_object_or_404(MultiAssessment, id=request.GET.get('assessment_id'))
+		data = AssessmentSerializer(a).data
+		data['domain_runs'] = AssessmentDomainRunSerializer(a.domain_runs.all(), many=True).data
+		return Response(data)
+
+
+class MultiAssessmentReport(APIView):
+	def get(self, request):
+		a = get_object_or_404(MultiAssessment, id=request.GET.get('assessment_id'))
+		return Response(build_multiscan_report(a))

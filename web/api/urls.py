@@ -213,6 +213,70 @@ urlpatterns = [
         StopScan.as_view(),
         name='stop_scan'),
     path(
+        'autonomous/start/',
+        StartAutonomousAssessment.as_view(),
+        name='autonomous_start'),
+    path(
+        'autonomous/pause/',
+        PauseAutonomousAssessment.as_view(),
+        name='autonomous_pause'),
+    path(
+        'autonomous/resume/',
+        ResumeAutonomousAssessment.as_view(),
+        name='autonomous_resume'),
+    path(
+        'autonomous/stop/',
+        StopAutonomousAssessment.as_view(),
+        name='autonomous_stop'),
+    path(
+        'autonomous/status/',
+        AutonomousAssessmentStatus.as_view(),
+        name='autonomous_status'),
+    path(
+        'autonomous/events/',
+        AutonomousAssessmentEventLog.as_view(),
+        name='autonomous_events'),
+    path(
+        'autonomous/approvals/',
+        AutonomousApprovalQueue.as_view(),
+        name='autonomous_approvals'),
+    path(
+        'autonomous/approvals/decide/',
+        AutonomousApprovalDecide.as_view(),
+        name='autonomous_approvals_decide'),
+    path(
+        'recon_intel/secrets/',
+        ListDiscoveredSecrets.as_view(),
+        name='recon_intel_secrets'),
+    path(
+        'recon_intel/js_files_with_secrets/',
+        ListJsFilesWithSecrets.as_view(),
+        name='recon_intel_js_files_with_secrets'),
+    path(
+        'multiscan/start/',
+        StartMultiAssessment.as_view(),
+        name='multiscan_start'),
+    path(
+        'multiscan/pause/',
+        PauseMultiAssessment.as_view(),
+        name='multiscan_pause'),
+    path(
+        'multiscan/resume/',
+        ResumeMultiAssessment.as_view(),
+        name='multiscan_resume'),
+    path(
+        'multiscan/stop/',
+        StopMultiAssessment.as_view(),
+        name='multiscan_stop'),
+    path(
+        'multiscan/status/',
+        MultiAssessmentStatus.as_view(),
+        name='multiscan_status'),
+    path(
+        'multiscan/report/',
+        MultiAssessmentReport.as_view(),
+        name='multiscan_report'),
+    path(
         'fetch/results/subscan/',
         FetchSubscanResults.as_view(),
         name='fetch_subscan_results'),

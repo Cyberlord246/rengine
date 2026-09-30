@@ -13,6 +13,59 @@
         <form method="POST" id="start-scan-form">
           {% csrf_token %}
           <div id="select_engine">
+            {% if not domain_list %}
+            <h4>Assessment Mode</h4>
+            <div class="mb-4">
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="assessment_mode" id="mode_manual" value="manual" checked>
+                <label class="form-check-label" for="mode_manual">Manual</label>
+              </div>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="assessment_mode" id="mode_ai_assisted" value="ai_assisted">
+                <label class="form-check-label" for="mode_ai_assisted">AI-Assisted</label>
+              </div>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="assessment_mode" id="mode_autonomous" value="autonomous">
+                <label class="form-check-label" for="mode_autonomous">Autonomous</label>
+              </div>
+              <small class="form-text text-muted d-block mt-1">
+                Manual keeps today's behavior: you queue every task yourself.
+                AI-Assisted proposes the next action and waits for your approval when risk requires it.
+                Autonomous keeps dispatching authorized actions on its own until the assessment completes or a stop condition is hit.
+              </small>
+
+              <div id="autonomous_options" style="display:none;" class="mt-3">
+                <label class="form-label" for="risk_level">Risk level</label>
+                <select class="form-control" id="risk_level" name="risk_level" style="max-width: 320px;">
+                  <option value="0">Safe &mdash; passive recon only</option>
+                  <option value="1">Standard &mdash; adds active scanning already enabled by the engine</option>
+                  <option value="2">Controlled &mdash; adds active validation, gated behind approval</option>
+                </select>
+                <div class="row mt-2" style="max-width: 500px;">
+                  <div class="col-6">
+                    <label class="form-label" for="max_runtime_minutes">Max runtime (minutes)</label>
+                    <input type="number" class="form-control" id="max_runtime_minutes" name="max_runtime_minutes" value="240" min="1">
+                  </div>
+                  <div class="col-6">
+                    <label class="form-label" for="max_actions">Max actions</label>
+                    <input type="number" class="form-control" id="max_actions" name="max_actions" value="50" min="1">
+                  </div>
+                </div>
+              </div>
+            </div>
+            <script>
+              (function () {
+                var radios = document.querySelectorAll('input[name="assessment_mode"]');
+                var options = document.getElementById('autonomous_options');
+                function sync() {
+                  var selected = document.querySelector('input[name="assessment_mode"]:checked');
+                  options.style.display = (selected && selected.value !== 'manual') ? 'block' : 'none';
+                }
+                radios.forEach(function (r) { r.addEventListener('change', sync); });
+                sync();
+              })();
+            </script>
+            {% endif %}
             <h4>Choose Scan Engine</h4>
             <div class="">
               <h4>Select Scan Engine</h4>

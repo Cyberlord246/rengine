@@ -9,6 +9,9 @@ from scanEngine.models import *
 from startScan.models import *
 from targetApp.models import *
 from dashboard.models import InAppNotification
+from autonomousMode.models import AssessmentDecision, AutonomousAssessment
+from reconIntel.models import DiscoveredSecret, HttpParameter, OriginIpCandidate
+from multiScan.models import Assessment, AssessmentDomainRun
 
 
 class HackerOneProgramAttributesSerializer(serializers.Serializer):
@@ -1001,3 +1004,94 @@ class VulnerabilitySerializer(serializers.ModelSerializer):
 		model = Vulnerability
 		fields = '__all__'
 		depth = 2
+
+
+class AutonomousAssessmentSerializer(serializers.ModelSerializer):
+	mode_display = serializers.CharField(source='get_mode_display', read_only=True)
+	risk_level_display = serializers.CharField(source='get_risk_level_display', read_only=True)
+	status_display = serializers.CharField(source='get_status_display', read_only=True)
+	initiated_by = MinimalUserSerializer(read_only=True)
+	domain_name = serializers.CharField(source='domain.name', read_only=True)
+	scan_history_id = serializers.IntegerField(source='scan_history.id', read_only=True, default=None)
+
+	class Meta:
+		model = AutonomousAssessment
+		fields = [
+			'id', 'domain_name', 'engine', 'scan_history_id', 'mode', 'mode_display',
+			'risk_level', 'risk_level_display', 'status', 'status_display',
+			'max_runtime_minutes', 'max_actions', 'actions_per_tick', 'tick_interval_seconds',
+			'actions_taken_count', 'consecutive_failures', 'initiated_by',
+			'started_at', 'updated_at', 'completed_at', 'completion_reason',
+		]
+
+
+class AssessmentDecisionSerializer(serializers.ModelSerializer):
+	target = serializers.SerializerMethodField()
+
+	class Meta:
+		model = AssessmentDecision
+		fields = [
+			'id', 'sequence', 'created_at', 'decided_at', 'target', 'action_type',
+			'candidate_score', 'reason', 'expected_outcome', 'policy_check',
+			'policy_result', 'policy_reason', 'status', 'celery_task_id',
+			'action_result_status',
+		]
+
+	def get_target(self, decision):
+		if decision.subdomain:
+			return decision.subdomain.name
+		return decision.assessment.domain.name
+
+
+class DiscoveredSecretSerializer(serializers.ModelSerializer):
+	severity_label = serializers.CharField(source='get_severity_display', read_only=True)
+	subdomain_name = serializers.SerializerMethodField()
+
+	class Meta:
+		model = DiscoveredSecret
+		fields = [
+			'id', 'secret_type', 'severity', 'severity_label', 'redacted_snippet',
+			'source_url', 'subdomain_name', 'discovered_date', 'is_false_positive',
+		]
+
+	def get_subdomain_name(self, obj):
+		return obj.subdomain.name if obj.subdomain else None
+
+
+class HttpParameterSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = HttpParameter
+		fields = ['id', 'name', 'param_type', 'source', 'discovered_date']
+
+
+class OriginIpCandidateSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = OriginIpCandidate
+		fields = ['id', 'ip_address', 'source', 'confidence', 'is_behind_cdn_bypass', 'discovered_date']
+
+
+class AssessmentDomainRunSerializer(serializers.ModelSerializer):
+	domain_name = serializers.CharField(source='domain.name', read_only=True)
+	scan_history_id = serializers.IntegerField(source='scan_history.id', read_only=True, default=None)
+
+	class Meta:
+		model = AssessmentDomainRun
+		fields = ['id', 'domain_name', 'scan_history_id', 'status', 'batch_index', 'started_at', 'finished_at', 'error']
+
+
+class AssessmentSerializer(serializers.ModelSerializer):
+	status_display = serializers.CharField(source='get_status_display', read_only=True)
+	engine_name = serializers.CharField(source='engine.engine_name', read_only=True)
+	domain_count = serializers.SerializerMethodField()
+	initiated_by = MinimalUserSerializer(read_only=True)
+
+	class Meta:
+		model = Assessment
+		fields = [
+			'id', 'name', 'status', 'status_display', 'engine_name', 'domain_count',
+			'batch_size', 'tick_interval_seconds', 'max_runtime_minutes',
+			'initiated_by', 'started_at', 'updated_at', 'completed_at', 'completion_reason',
+		]
+
+	def get_domain_count(self, obj):
+		return obj.domains.count()
